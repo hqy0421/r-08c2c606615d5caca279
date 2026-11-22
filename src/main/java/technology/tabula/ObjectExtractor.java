@@ -8,9 +8,21 @@ import org.apache.pdfbox.pdmodel.PDPage;
 public class ObjectExtractor implements java.io.Closeable {
 
     private final PDDocument pdfDocument;
+    private final boolean rotateText;
 
     public ObjectExtractor(PDDocument pdfDocument) {
+        this(pdfDocument, false);
+    }
+
+    /**
+     * @param rotateText when true, character geometry is expressed in the same
+     *                   page coordinate system as the ruling lines and rotated
+     *                   (vertical) text is preserved with its reading direction,
+     *                   enabling rotated-text extraction in lattice mode.
+     */
+    public ObjectExtractor(PDDocument pdfDocument, boolean rotateText) {
         this.pdfDocument = pdfDocument;
+        this.rotateText = rotateText;
     }
 
     // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - //
@@ -23,7 +35,7 @@ public class ObjectExtractor implements java.io.Closeable {
         ObjectExtractorStreamEngine streamEngine = new ObjectExtractorStreamEngine(page);
         streamEngine.processPage(page);
 
-        TextStripper textStripper = new TextStripper(pdfDocument, pageNumber);
+        TextStripper textStripper = new TextStripper(pdfDocument, pageNumber, rotateText, page.getRotation());
         textStripper.process();
 
         Utils.sort(textStripper.getTextElements(), Rectangle.ILL_DEFINED_ORDER);

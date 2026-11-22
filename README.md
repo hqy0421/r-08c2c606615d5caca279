@@ -55,6 +55,13 @@ Tabula helps you extract tables from PDFs
  -p,--pages <PAGES>         Comma separated list of ranges, or all.
                             Examples: --pages 1-3,5-7, --pages 3 or
                             --pages all. Default is --pages 1
+ -R,--rotated-text          Extract text rotated 90 or 270 degrees (for
+                            example vertical codes or headers in narrow
+                            lattice cells). Character geometry is aligned to
+                            the ruling-line coordinate system and each cell is
+                            read along its own text direction. Only meaningful
+                            with lattice-mode extraction; when omitted the
+                            default behavior is preserved.
  -r,--spreadsheet           [Deprecated in favor of -l/--lattice] Force
                             PDF to be extracted using spreadsheet-style
                             extraction (if there are ruling lines

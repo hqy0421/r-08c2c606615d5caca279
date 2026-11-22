@@ -45,13 +45,15 @@ public class CommandLineApp {
     private OutputFormat outputFormat;
     private String password;
     private TableExtractor tableExtractor;
+    private boolean rotateText;
 
     public CommandLineApp(Appendable defaultOutput, CommandLine line) throws ParseException {
         this.defaultOutput = defaultOutput;
         this.pageAreas = CommandLineApp.whichAreas(line);
         this.pages = CommandLineApp.whichPages(line);
         this.outputFormat = CommandLineApp.whichOutputFormat(line);
-        this.tableExtractor = CommandLineApp.createExtractor(line);
+        this.rotateText = line.hasOption('R');
+        this.tableExtractor = CommandLineApp.createExtractor(line, this.rotateText);
 
         if (line.hasOption('s')) {
             this.password = line.getOptionValue('s');
@@ -201,7 +203,7 @@ public class CommandLineApp {
     }
 
     private PageIterator getPageIterator(PDDocument pdfDocument) throws IOException {
-        ObjectExtractor extractor = new ObjectExtractor(pdfDocument);
+        ObjectExtractor extractor = new ObjectExtractor(pdfDocument, rotateText);
         return (pages == null) ?
                 extractor.extract() :
                 extractor.extract(pages);
@@ -266,8 +268,8 @@ public class CommandLineApp {
         return ExtractionMethod.DECIDE;
     }
 
-    private static TableExtractor createExtractor(CommandLine line) throws ParseException {
-        TableExtractor extractor = new TableExtractor();
+    private static TableExtractor createExtractor(CommandLine line, boolean rotateText) throws ParseException {
+        TableExtractor extractor = new TableExtractor(rotateText);
         extractor.setGuess(line.hasOption('g'));
         extractor.setMethod(CommandLineApp.whichExtractionMethod(line));
         extractor.setUseLineReturns(line.hasOption('u'));
@@ -316,6 +318,9 @@ public class CommandLineApp {
         o.addOption("t", "stream", false, "Force PDF to be extracted using stream-mode extraction (if there are no ruling lines separating each cell)");
         o.addOption("i", "silent", false, "Suppress all stderr output.");
         o.addOption("u", "use-line-returns", false, "Use embedded line returns in cells. (Only in spreadsheet mode.)");
+        o.addOption("R", "rotated-text", false, "Extract text rotated 90 or 270 degrees (e.g. vertical codes or headers in narrow lattice cells). "
+                + "Character geometry is aligned to the ruling-line coordinate system and each cell is read along its own text direction. "
+                + "Only meaningful with lattice/--lattice mode; when omitted, the default behavior is preserved.");
         // o.addOption("d", "debug", false, "Print detected table areas instead of processing.");
         o.addOption(Option.builder("b")
                 .longOpt("batch")
@@ -372,7 +377,7 @@ public class CommandLineApp {
         private boolean guess = false;
         private boolean useLineReturns = false;
         private BasicExtractionAlgorithm basicExtractor = new BasicExtractionAlgorithm();
-        private SpreadsheetExtractionAlgorithm spreadsheetExtractor = new SpreadsheetExtractionAlgorithm();
+        private final SpreadsheetExtractionAlgorithm spreadsheetExtractor;
 
         private boolean verticalRulingPositionsRelative = false;
         private List<Float> verticalRulingPositions = null;
@@ -380,6 +385,11 @@ public class CommandLineApp {
         private ExtractionMethod method = ExtractionMethod.BASIC;
 
         public TableExtractor() {
+            this(false);
+        }
+
+        public TableExtractor(boolean rotateText) {
+            this.spreadsheetExtractor = new SpreadsheetExtractionAlgorithm(rotateText);
         }
 
         public void setVerticalRulingPositions(List<Float> positions) {

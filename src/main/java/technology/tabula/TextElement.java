@@ -1,6 +1,7 @@
 package technology.tabula;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 
 import org.apache.pdfbox.pdmodel.font.PDFont;
@@ -272,6 +273,181 @@ public class TextElement extends Rectangle implements HasText {
 
     private static boolean verticallyOverlapsRuling(TextElement te, Ruling r) {
         return Math.max(0, Math.min(te.getBottom(), r.getY2()) - Math.max(te.getTop(), r.getY1())) > 0;
+    }
+
+    /**
+     * Merge a list of page-frame aligned {@link TextElement}s into words,
+     * honoring the reading direction of every character. The input geometry must
+     * be expressed in the page coordinate system shared with the ruling lines,
+     * i.e. it must have been produced with rotated-text extraction enabled.
+     *
+     * <p>Every cell is processed with a single reading direction: horizontal
+     * characters (dir 0/180) are joined left-to-right exactly like
+     * {@link #mergeWords(List, List)}, while vertical characters (dir 90/270)
+     * are joined along the vertical reading axis, bottom-to-top for
+     * {@link TextOrientation#VERTICAL_UP} and top-to-bottom for
+     * {@link TextOrientation#VERTICAL_DOWN}. Characters of different
+     * orientations are never merged together, so a vertical code can never be
+     * read backwards or spill into a neighboring cell.
+     *
+     * @param textElements    page-frame aligned characters
+     * @param verticalRulings ruling lines that must not be crossed by a word
+     * @return one {@link TextChunk} per detected word, each of a single orientation
+     */
+    public static List<TextChunk> mergeWordsRotated(List<TextElement> textElements, List<Ruling> verticalRulings) {
+        List<TextChunk> chunks = new ArrayList<>();
+        if (textElements.isEmpty()) {
+            return chunks;
+        }
+
+        List<TextElement> sorted = new ArrayList<>(textElements);
+        Utils.sort(sorted, new ReadingOrderComparator());
+
+        TextChunk current = new TextChunk(sorted.get(0));
+        chunks.add(current);
+
+        for (int i = 1; i < sorted.size(); i++) {
+            TextElement chr = sorted.get(i);
+            TextElement prev = current.textElements.get(current.textElements.size() - 1);
+
+            // a change of reading direction always starts a new word
+            TextOrientation chrOrientation = TextOrientation.fromDirection(chr.getDirection());
+            TextOrientation prevOrientation = TextOrientation.fromDirection(prev.getDirection());
+            if (!chrOrientation.equals(prevOrientation)) {
+                current = new TextChunk(chr);
+                chunks.add(current);
+                continue;
+            }
+
+            // duplicated/overlapping glyph and overlapping space handling,
+            // mirroring the historical mergeWords heuristics
+            if (chr.getText().equals(prev.getText()) && prev.overlapRatio(chr) > 0.5) {
+                continue;
+            }
+            if (chr.getText().equals(" ") && Utils.feq(prev.getLeft(), chr.getLeft()) && Utils.feq(prev.getTop(), chr.getTop())) {
+                continue;
+            }
+
+            boolean acrossRuling = crossesRuling(prev, chr, verticalRulings);
+            boolean sameRun = isSameReadingRun(prev, chr, prevOrientation, acrossRuling);
+
+            if (sameRun) {
+                current.add(chr);
+            } else {
+                current = new TextChunk(chr);
+                chunks.add(current);
+            }
+        }
+
+        return chunks;
+    }
+
+    /**
+     * Orders characters along their reading axis inside the page-frame aligned
+     * coordinate system. The stored direction is the page-frame reading
+     * direction (clockwise from the positive X axis: 0 left-to-right,
+     * 90 top-to-bottom, 180 right-to-left, 270 bottom-to-top), so ordering is
+     * performed by projecting each glyph anchor onto its reading axis:
+     * horizontal runs (dir 0/180) order by left coordinate, vertical runs
+     * (dir 90/270) by top coordinate, each in the reading direction. The
+     * perpendicular coordinate orders parallel lines.
+     */
+    static class ReadingOrderComparator implements Comparator<TextElement> {
+        @Override
+        public int compare(TextElement a, TextElement b) {
+            int da = normalizedDirection(a.getDirection());
+            int db = normalizedDirection(b.getDirection());
+            TextOrientation oa = TextOrientation.fromDirection(da);
+            TextOrientation ob = TextOrientation.fromDirection(db);
+            int orientationCompare = Integer.compare(oa.ordinal(), ob.ordinal());
+            if (orientationCompare != 0) {
+                return orientationCompare;
+            }
+            if (oa.isVertical()) {
+                // order parallel vertical lines left-to-right first
+                int line = java.lang.Float.compare(a.getLeft(), b.getLeft());
+                if (line != 0) {
+                    return line;
+                }
+                // dir 90 reads toward larger top, dir 270 toward smaller top
+                int along = java.lang.Float.compare(a.getTop(), b.getTop());
+                return da == 270 ? -along : along;
+            }
+            // order parallel horizontal lines top-to-bottom first
+            int line = java.lang.Float.compare(a.getTop(), b.getTop());
+            if (line != 0) {
+                return line;
+            }
+            // dir 0 reads toward larger left, dir 180 toward smaller left
+            int along = java.lang.Float.compare(a.getLeft(), b.getLeft());
+            return da == 180 ? -along : along;
+        }
+
+        private static int normalizedDirection(float dir) {
+            int d = Math.round(dir) % 360;
+            return d < 0 ? d + 360 : d;
+        }
+    }
+
+    private static boolean isSameReadingRun(TextElement prev, TextElement chr,
+                                            TextOrientation orientation, boolean acrossRuling) {
+        if (acrossRuling) {
+            return false;
+        }
+
+        int prevDir = normalizedFrameDirection(prev.getDirection());
+        int chrDir = normalizedFrameDirection(chr.getDirection());
+
+        float wordSpacing = chr.getWidthOfSpace();
+        float spacingTolerance;
+        if (java.lang.Float.isNaN(wordSpacing) || wordSpacing == 0) {
+            spacingTolerance = java.lang.Float.MAX_VALUE;
+        } else {
+            spacingTolerance = wordSpacing * 0.5f;
+        }
+
+        if (orientation.isVertical()) {
+            // Stacked glyphs belong to the same word while they stay on the same
+            // vertical line and the gap between them stays within a space width.
+            // The reading axis is vertical: dir 90 advances downward, dir 270 up.
+            if (!Utils.overlap(chr.getRight(), (float) chr.getWidth(), prev.getRight(), (float) prev.getWidth())) {
+                return false;
+            }
+            float gap;
+            if (prevDir == 270 || chrDir == 270) {
+                gap = prev.getTop() - chr.getBottom();
+            } else {
+                gap = chr.getTop() - prev.getBottom();
+            }
+            return gap >= 0 ? gap < wordSpacing : prev.horizontallyOverlaps(chr);
+        }
+
+        // Horizontal run, same heuristics as the historical merger. dir 180
+        // reads right-to-left, so the gap sign is reversed.
+        float averageCharWidth = (float) ((prev.getWidth() + chr.getWidth()) / 2.0);
+        float charTolerance = averageCharWidth * AVERAGE_CHAR_TOLERANCE;
+        if (!Utils.overlap(chr.getBottom(), (float) chr.getHeight(), prev.getBottom(), (float) prev.getHeight())) {
+            return false;
+        }
+        boolean rightToLeft = prevDir == 180 || chrDir == 180;
+        float gap = rightToLeft ? prev.getLeft() - chr.getRight() : chr.getLeft() - prev.getRight();
+        return gap < 0 ? prev.verticallyOverlaps(chr) : gap < Math.min(spacingTolerance, charTolerance);
+    }
+
+    private static int normalizedFrameDirection(float dir) {
+        int d = Math.round(dir) % 360;
+        return d < 0 ? d + 360 : d;
+    }
+
+    private static boolean crossesRuling(TextElement prev, TextElement chr, List<Ruling> rulings) {
+        for (Ruling r : rulings) {
+            if (verticallyOverlapsRuling(prev, r) && verticallyOverlapsRuling(chr, r)
+                    && ((prev.x < r.getPosition() && chr.x > r.getPosition())
+                    || (prev.x > r.getPosition() && chr.x < r.getPosition()))) {
+                return true;
+            }
+        }
+        return false;
     }
 
 }

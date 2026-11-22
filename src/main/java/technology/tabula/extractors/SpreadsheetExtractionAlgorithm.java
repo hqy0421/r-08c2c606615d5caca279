@@ -10,9 +10,26 @@ import java.util.*;
  *
  */
 public class SpreadsheetExtractionAlgorithm implements ExtractionAlgorithm {
-    
+
     private static final float MAGIC_HEURISTIC_NUMBER = 0.65f;
-    
+
+    private final boolean rotateText;
+
+    public SpreadsheetExtractionAlgorithm() {
+        this(false);
+    }
+
+    /**
+     * @param rotateText when true, characters are merged honoring their reading
+     *                   direction so that vertical (rotated) text is extracted in
+     *                   the correct order within its lattice cell. Requires the
+     *                   page to have been built with rotated-text extraction
+     *                   enabled in {@link technology.tabula.ObjectExtractor}.
+     */
+    public SpreadsheetExtractionAlgorithm(boolean rotateText) {
+        this.rotateText = rotateText;
+    }
+
     private static final Comparator<Point2D> Y_FIRST_POINT_COMPARATOR = (point1, point2) -> {
         int compareY = compareRounded(point1.getY(), point2.getY());
         if (compareY == 0) {
@@ -70,7 +87,12 @@ public class SpreadsheetExtractionAlgorithm implements ExtractionAlgorithm {
             for (Cell c: cells) {
                 if (c.intersects(area)) {
 
-                    c.setTextElements(TextElement.mergeWords(page.getText(c)));
+                    List<TextElement> cellText = page.getText(c);
+                    List<TextChunk> chunks = rotateText
+                            ? TextElement.mergeWordsRotated(cellText, verticalR)
+                            : TextElement.mergeWords(cellText);
+                    c.setTextElements(chunks);
+                    c.setVerticalTextExtraction(rotateText);
                     overlappingCells.add(c);
                 }
             }
